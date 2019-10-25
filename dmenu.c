@@ -39,6 +39,7 @@ struct item {
 static char text[BUFSIZ] = "";
 static char *embed;
 static int bh, mw, mh;
+static int dmw = -1, dmh = -1, lh = -1;
 static int inputw = 0, promptw;
 static int lrpad; /* sum of left and right padding */
 static size_t cursor;
@@ -133,32 +134,38 @@ drawmenu(void)
 {
 	unsigned int curpos;
 	struct item *item;
+    int fh = drw->fonts->h + 2;
 	int x = 0, y = 0, w;
 
+    /* Draw the background rectangle */
 	drw_setscheme(drw, scheme[SchemeNorm]);
 	drw_rect(drw, 0, 0, mw, mh, 1, 1);
 
+    /* Draw the prompt text */
 	if (prompt && *prompt) {
 		drw_setscheme(drw, scheme[SchemeSel]);
 		x = drw_text(drw, x, 0, promptw, bh, lrpad / 2, prompt, 0);
 	}
-	/* draw input field */
+
+	/* Draw input/search field */
 	w = (lines > 0 || !matches) ? mw - x : inputw;
 	drw_setscheme(drw, scheme[SchemeNorm]);
 	drw_text(drw, x, 0, w, bh, lrpad / 2, text, 0);
 
+    /* Draw the cursor in the input/search field */
 	curpos = TEXTW(text) - TEXTW(&text[cursor]);
 	if ((curpos += lrpad / 2 - 1) < w) {
 		drw_setscheme(drw, scheme[SchemeNorm]);
-		drw_rect(drw, x + curpos, 2, 2, bh - 4, 1, 0);
+		drw_rect(drw, x + curpos, 2 + (bh-fh)/2, 2, fh - 4, 1, 0);
 	}
 
+    /* Draw the options */
 	if (lines > 0) {
-		/* draw vertical list */
+		/* Vertical list */
 		for (item = curr; item != next; item = item->right)
 			drawitem(item, x, y += bh, mw - x);
 	} else if (matches) {
-		/* draw horizontal list */
+		/* Horizontal list */
 		x += inputw;
 		w = TEXTW("<");
 		if (curr->left) {
@@ -546,7 +553,6 @@ readstdin(void)
 	if (items)
 		items[i].text = NULL;
 	inputw = items ? TEXTW(items[imax].text) : 0;
-	lines = MIN(lines, i);
 }
 
 static void
@@ -606,8 +612,9 @@ setup(void)
 
 	/* calculate menu geometry */
 	bh = drw->fonts->h + 2;
+    bh = MAX(bh, lh);
 	lines = MAX(lines, 0);
-	mh = (lines + 1) * bh;
+    
 #ifdef XINERAMA
 	i = 0;
 	if (parentwin == root && (info = XineramaQueryScreens(dpy, &n))) {
@@ -634,9 +641,25 @@ setup(void)
 				if (INTERSECT(x, y, 1, 1, info[i]))
 					break;
 
+        /* Set the box height */
+        if (lh == -1)
+	        bh = drw->fonts->h + 2;
+        else if (lh == 0 && lines != 0)
+            bh = (int) (info[i].height / (lines+1));
+        else
+            bh = MAX(drw->fonts->h + 2, lh);
+
+        /* Set the max height of the menu */
+        if (dmh == -1)
+	        mh = (lines + 1) * bh;
+        else if (dmh == 0)
+            mh = info[i].height;
+        else
+            mh = dmh;
+
 		x = info[i].x_org;
 		y = info[i].y_org + (topbar ? 0 : info[i].height - mh);
-		mw = info[i].width;
+		mw = dmw > 0 ? dmw : info[i].width;
 		XFree(info);
 	} else
 #endif
@@ -644,9 +667,26 @@ setup(void)
 		if (!XGetWindowAttributes(dpy, parentwin, &wa))
 			die("could not get embedding window attributes: 0x%lx",
 			    parentwin);
+
+        /* Set the box height */
+        if (lh == -1)
+	        bh = drw->fonts->h + 2;
+        else if (lh == 0 && lines != 0)
+            bh = (int) (wa.height / (lines+1));
+        else
+            bh = MAX(drw->fonts->h + 2, lh);
+
+        /* Set the max height of the menu */
+        if (dmh == -1)
+	        mh = (lines + 1) * bh;
+        else if (dmh == 0)
+            mh = wa.height;
+        else
+            mh = dmh;
+
 		x = 0;
 		y = topbar ? 0 : wa.height - mh;
-		mw = wa.width;
+		mw = dmw > 0 ? dmw : wa.width;
 	}
 	promptw = (prompt && *prompt) ? TEXTW(prompt) - lrpad / 4 : 0;
 	inputw = MIN(inputw, mw/3);
@@ -685,6 +725,7 @@ static void
 usage(void)
 {
 	fputs("usage: dmenu [-bfiv] [-l lines] [-p prompt] [-fn font] [-m monitor]\n"
+          "             [-mw width] [-mh height] [-lh lineheight] \n"
 	      "             [-nb color] [-nf color] [-sb color] [-sf color] [-w windowid]\n", stderr);
 	exit(1);
 }
@@ -695,7 +736,7 @@ main(int argc, char *argv[])
 	XWindowAttributes wa;
 	int i, fast = 0;
 
-	for (i = 1; i < argc; i++)
+	for (i = 1; i < argc; i++) {
 		/* these options take no arguments */
 		if (!strcmp(argv[i], "-v")) {      /* prints version information */
 			puts("dmenu-"VERSION);
@@ -718,6 +759,12 @@ main(int argc, char *argv[])
 			prompt = argv[++i];
 		else if (!strcmp(argv[i], "-fn"))  /* font or font set */
 			fonts[0] = argv[++i];
+        else if (!strcmp(argv[i], "-mw"))  /* width of the menu */
+            dmw = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-mh"))  /* height of the menu */
+            dmh = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-lh"))  /* height of each line in the menu */
+            lh = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-nb"))  /* normal background color */
 			colors[SchemeNorm][ColBg] = argv[++i];
 		else if (!strcmp(argv[i], "-nf"))  /* normal foreground color */
@@ -726,10 +773,12 @@ main(int argc, char *argv[])
 			colors[SchemeSel][ColBg] = argv[++i];
 		else if (!strcmp(argv[i], "-sf"))  /* selected foreground color */
 			colors[SchemeSel][ColFg] = argv[++i];
-		else if (!strcmp(argv[i], "-w"))   /* embedding window id */
+		else if (!strcmp(argv[i], "-wid"))   /* embedding window id */
 			embed = argv[++i];
-		else
+		else {
 			usage();
+        }
+    }
 
 	if (!setlocale(LC_CTYPE, "") || !XSupportsLocale())
 		fputs("warning: no locale support\n", stderr);
